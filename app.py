@@ -4,6 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from top_performers import get_api_key, mask_key, check_api_key
+
 app = FastAPI(title="BEAST Top Performers Live")
 
 app.add_middleware(
@@ -12,6 +20,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+def log_key_status():
+    key = get_api_key()
+    print(f"[BEAST] ODDS_API_KEY {'loaded: ' + mask_key(key) if key else 'NOT SET - serving sample data'}", flush=True)
 
 # FIX: mount at /static ONLY - never at "/"
 if os.path.isdir("static"):
@@ -26,8 +39,12 @@ def root():
 
 @app.get("/health")
 @app.get("/api/v1/health")
-def health():
-    return {"live": True, "odds_api_key_set": bool(os.getenv("ODDS_API_KEY"))}
+def health(check: bool = Query(False)):
+    key = get_api_key()
+    out = {"live": True, "odds_api_key_set": bool(key), "key_preview": mask_key(key)}
+    if check:
+        out["key_check"] = check_api_key()
+    return out
 
 @app.get("/api/v1/top-performers")
 def top_performers_api(sport: str = Query("all"), mode: str = Query("overall")):
