@@ -63,6 +63,52 @@ def team_detail_api(team_name: str, sport: str = Query("nba")):
     from top_performers import get_team_players
     return get_team_players(team_name, sport.lower())
 
+
+@app.get("/api/v1/test-odds")
+def test_odds():
+    import requests
+    key = os.getenv("ODDS_API_KEY","").strip()
+    if not key:
+        return {"error": "ODDS_API_KEY not set", "env_vars": [k for k in os.environ.keys() if "ODDS" in k.upper()]}
+    # Test with a simple call that always works - list sports
+    try:
+        url = "https://api.the-odds-api.com/v4/sports"
+        r = requests.get(url, params={"apiKey": key}, timeout=10)
+        return {
+            "key_set": True,
+            "key_len": len(key),
+            "key_first4": key[:4]+"...",
+            "sports_endpoint_status": r.status_code,
+            "sports_count": len(r.json()) if r.status_code==200 else 0,
+            "response_preview": str(r.text)[:500],
+            "credits_remaining": r.headers.get("x-requests-remaining"),
+            "credits_used": r.headers.get("x-requests-used")
+        }
+    except Exception as e:
+        return {"error": str(e), "key_set": bool(key)}
+
+@app.get("/api/v1/test-props/{sport}")
+def test_props(sport: str):
+    import requests
+    key = os.getenv("ODDS_API_KEY","").strip()
+    sport_keys = {"nfl": "americanfootball_nfl", "nba": "basketball_nba", "nhl": "icehockey_nhl"}
+    sk = sport_keys.get(sport.lower(), "americanfootball_nfl")
+    try:
+        url = f"https://api.the-odds-api.com/v4/sports/{sk}/odds"
+        params = {"apiKey": key, "regions": "us", "markets": "player_pass_yds", "oddsFormat": "american"}
+        r = requests.get(url, params=params, timeout=12)
+        return {
+            "sport": sport,
+            "sport_key": sk,
+            "status": r.status_code,
+            "games": len(r.json()) if r.status_code==200 else 0,
+            "credits_remaining": r.headers.get("x-requests-remaining"),
+            "preview": str(r.text)[:1000]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/v1/debug-env")
 def debug_env():
     # show all env var names (not values) to help user find typo
