@@ -13,16 +13,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# mount static folder at /static - Railway serves files fast, not via python
+# CORRECT: mount at /static, not at /
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def root():
-    # FAST path - no FileResponse if file is huge, redirect to /static/index.html
     idx = os.path.join("static", "index.html")
     if os.path.exists(idx):
-        # serve via redirect to static - avoids python blocking
         return FileResponse(idx, media_type="text/html")
     return {"status": "LIVE", "ui": "/static/index.html", "api": "/api/v1/health"}
 
@@ -31,7 +29,6 @@ def root():
 def health():
     return {"live": True, "odds_api_key_set": bool(os.getenv("ODDS_API_KEY"))}
 
-# lazy import inside endpoint so container starts instantly
 @app.get("/api/v1/top-performers")
 def top_performers_api(sport: str = Query("all"), mode: str = Query("overall")):
     from top_performers import get_top_performers, get_top_per_team
