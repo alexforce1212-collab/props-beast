@@ -1,5 +1,4 @@
 
-
 import os, time
 from datetime import datetime
 from collections import defaultdict
@@ -120,4 +119,3 @@ if __name__ == "__main__":
     import json, sys
     f = sys.argv[1] if len(sys.argv) > 1 else "all"
     print(json.dumps(get_top_performers(f), indent=2))
-
