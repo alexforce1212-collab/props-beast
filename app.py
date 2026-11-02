@@ -1,4 +1,5 @@
 import os
+import time
 from collections import defaultdict
 import requests
 from fastapi import FastAPI, Query
@@ -105,6 +106,16 @@ def sample_data(sports, limit, sport, note):
             })
     return {"sport_filter": sport, "count": len(data[:limit]), "data": data[:limit], "live": False, "note": note}
 
+MARKET_LABELS = {
+    "player_points": "Points",
+    "player_pass_yds": "Pass Yds",
+    "batter_hits": "Hits",
+}
+
+# Cache live results so every page load doesn't burn Odds API quota
+CACHE_SECONDS = int(os.getenv("CACHE_SECONDS", "300"))
+_cache = {}
+
 def fetch_sport_props(s, sport_key, key, errors):
     players=[]
     market = PROP_MARKETS.get(s)
@@ -121,32 +132,42 @@ def fetch_sport_props(s, sport_key, key, errors):
             errors.append(f"{s}: odds HTTP {er.status_code} - {er.text[:200]}")
             continue
         game = f"{ev.get('away_team')} @ {ev.get('home_team')}"
-        # player -> best Over line seen across books
-        best = {}
+        # (player, line) -> every book's Over price at that line
+        quotes = defaultdict(list)
         for bm in er.json().get("bookmakers", []):
             for mk in bm.get("markets", []):
                 for oc in mk.get("outcomes", []):
-                    if oc.get("name") != "Over" or not oc.get("description"):
+                    if oc.get("name") != "Over" or not oc.get("description") or oc.get("price") is None:
                         continue
-                    prob = implied_prob(oc.get("price"))
-                    name = oc["description"]
-                    if name not in best or prob > best[name]["hitRate"]:
-                        best[name] = {
-                            "player": name,
-                            "team": game,
-                            "game": game,
-                            "sport": s.upper(),
-                            "market": mk.get("key", market),
-                            "line": oc.get("point"),
-                            "price": oc.get("price"),
-                            "book": bm.get("title"),
-                            "hitRate": round(prob, 3),
-                            "avgMargin": 0,
-                            "score": round(prob * 10, 2),
-                            "last5": [],
-                            "commence_time": ev.get("commence_time"),
-                        }
-        players.extend(best.values())
+                    quotes[(oc["description"], oc.get("point"))].append((bm.get("title"), oc["price"]))
+        # Per player, use the line the most books agree on
+        by_player = {}
+        for (name, point), qs in quotes.items():
+            if name not in by_player or len(qs) > len(by_player[name][1]):
+                by_player[name] = (point, qs)
+        for name, (point, qs) in by_player.items():
+            probs = [implied_prob(p) for _, p in qs]
+            consensus = sum(probs) / len(probs)
+            book, price = min(qs, key=lambda q: implied_prob(q[1]))  # best payout for the bettor
+            players.append({
+                "player": name,
+                "team": game,
+                "game": game,
+                "home_team": ev.get("home_team"),
+                "away_team": ev.get("away_team"),
+                "sport": s.upper(),
+                "market": market,
+                "line": point,
+                "price": price,
+                "book": book,
+                "books": len(qs),
+                "hitRate": round(consensus, 3),
+                "edge": round((consensus - implied_prob(price)) * 100, 1),
+                "avgMargin": 0,
+                "score": round(consensus * 100, 1),
+                "last5": [],
+                "commence_time": ev.get("commence_time"),
+            })
     return players
 
 def get_top_performers(sport="all", limit=20):
@@ -156,22 +177,55 @@ def get_top_performers(sport="all", limit=20):
         # Returns sample data when no API key, so UI works immediately
         return sample_data(sports, limit, sport, "Add ODDS_API_KEY env var for live odds")
 
-    errors=[]
-    all_players=[]
-    try:
-        for s in sports:
-            sport_key = SPORT_KEYS.get(s)
-            if not sport_key:
-                continue
-            all_players.extend(fetch_sport_props(s, sport_key, key, errors))
-    except Exception as e:
-        errors.append(str(e))
+    cached = _cache.get(sport)
+    if cached and time.time() - cached[0] < CACHE_SECONDS:
+        all_players, errors = cached[1], cached[2]
+    else:
+        errors=[]
+        all_players=[]
+        try:
+            for s in sports:
+                sport_key = SPORT_KEYS.get(s)
+                if not sport_key:
+                    continue
+                all_players.extend(fetch_sport_props(s, sport_key, key, errors))
+        except Exception as e:
+            errors.append(str(e))
+        all_players.sort(key=lambda x: x["score"], reverse=True)
+        # Don't cache a total failure, so a fixed key works on the next request
+        if all_players or not errors:
+            _cache[sport] = (time.time(), all_players, errors)
 
-    all_players.sort(key=lambda x: x["score"], reverse=True)
     result = {"sport_filter": sport, "count": len(all_players[:limit]), "data": all_players[:limit], "live": True}
     if errors:
         result["errors"] = errors
     return result
+
+def get_page_props(sport="all"):
+    # Same live data, shaped the way static/index.html renders it
+    result = get_top_performers(sport=sport, limit=1000)
+    if not result.get("live"):
+        return {"live": False, "data": [], "note": result.get("note")}
+    data = []
+    for p in result["data"]:
+        line = p.get("line")
+        data.append({
+            "name": p["player"],
+            "sport": p["sport"],
+            "home_team": p["home_team"],
+            "away_team": p["away_team"],
+            "market": MARKET_LABELS.get(p["market"], p["market"]),
+            "line": f"O {line:.1f}" if isinstance(line, (int, float)) else "O —",
+            "book": p["book"],
+            "hitRate": round(p["hitRate"] * 100),
+            "last5": [],
+            "score": p["score"],
+            "edge": f"{p['edge']:+.1f}%",
+        })
+    out = {"live": True, "count": len(data), "data": data}
+    if result.get("errors"):
+        out["errors"] = result["errors"]
+    return out
 
 def get_teams(sport="all"):
     if sport=="all":
@@ -225,10 +279,16 @@ if os.path.isdir("static"):
 
 @app.get("/")
 def root():
-    idx = os.path.join("static", "index.html")
-    if os.path.exists(idx):
-        return FileResponse(idx, media_type="text/html")
+    # Linux is case-sensitive, so accept index.html or Index.html
+    for fname in ("index.html", "Index.html"):
+        idx = os.path.join("static", fname)
+        if os.path.exists(idx):
+            return FileResponse(idx, media_type="text/html")
     return {"status": "LIVE", "service": "BEAST", "ui": "/static/index.html", "health": "/api/v1/health"}
+
+@app.get("/api/v1/props")
+def props_api(sport: str = Query("all")):
+    return get_page_props(sport.lower())
 
 @app.get("/health")
 @app.get("/api/v1/health")
