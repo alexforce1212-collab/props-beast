@@ -1,6 +1,8 @@
 import os
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
 from top_performers import get_top_performers, get_top_per_team, get_team_players, get_teams, TEAMS
 
 app = FastAPI(title="BEAST Top Performers Live")
@@ -12,7 +14,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
+if os.path.isdir("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+@app.get("/api")
 def root():
     return {
         "status": "LIVE",
@@ -33,7 +38,7 @@ def teams_api(sport: str = Query("all")):
     return get_teams(sport.lower())
 
 @app.get("/api/v1/team/{team_name}")
-def team_detail_api(team_name: str, sport: str = Query("【entity-nba¦canonical_name=NBA】")):
+def team_detail_api(team_name: str, sport: str = Query("nba")):
     return get_team_players(team_name, sport.lower())
 
 @app.get("/api/v1/health")
